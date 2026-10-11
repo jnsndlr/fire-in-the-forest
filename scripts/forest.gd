@@ -674,13 +674,14 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 	tree.position = Vector3(x,0,z)
 	add_child(tree)
 	var mids = maxi(1, roundi((height-7.0)/SEGMENT_HEIGHT))
-	# Crown sits in the tapering top segment; climbing reaches just below it.
+	# Crown sits in the tapering top segment.
 	height = SEGMENT_HEIGHT*(mids+1) + 3.0
-	tree.set_meta("height",height)
 	var bark = Color("8f6552") if climbable else Color("ad8e80")
 	var trunk = MeshInstance3D.new()
 	var crown_joints = []
 	trunk.mesh = trunk_mesh(mids, crown_joints)
+	var paths = _climb_paths(SEGMENT_HEIGHT*(mids+2), crown_joints)
+	tree.set_meta("climb_paths", paths)
 	trunk.material_override = paint(Color.WHITE if climbable else Color("f2e2da"), {"use_vertex_color": true, "grain_scale": Vector3(3.5,0.35,3.5)})
 	if not climbable: trunk.scale = Vector3(1.35,1.0,1.35)
 	tree.add_child(trunk)
@@ -725,11 +726,39 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 		collision.shape = shape
 		collision.position.y = height/2
 		area.add_child(collision)
+		# The split crown spreads wider, so the grip area follows the limbs up.
+		var fork_y = paths[1.0][1].y
+		var top_y = maxf(paths[1.0][-1].y, paths[-1.0][-1].y)
+		var crown_shape = BoxShape3D.new()
+		crown_shape.size = Vector3(absf(paths[1.0][-1].x) + absf(paths[-1.0][-1].x) + 1.8, top_y - fork_y + 1, 2)
+		var crown_collision = CollisionShape3D.new()
+		crown_collision.shape = crown_shape
+		crown_collision.position = Vector3((paths[1.0][-1].x + paths[-1.0][-1].x)/2, (fork_y + top_y)/2, 0)
+		area.add_child(crown_collision)
 		tree.add_child(area)
 		area.body_entered.connect(func(body):
 			if body == player and not player.nearby_trunks.has(tree): player.nearby_trunks.append(tree))
 		area.body_exited.connect(func(body):
 			if body == player: player.nearby_trunks.erase(tree))
+
+func _climb_paths(fork_y: float, crown_joints: Array) -> Dictionary:
+	# Climb lines for each side, as (x, y, z, girth) points relative to the tree: straight
+	# up the trunk to the fork, then out along the fork limb on that side (the one
+	# nearest the camera, if several) and partway up its top, where it gets too thin to hold.
+	var paths = {}
+	for side in [1.0, -1.0]:
+		var limb = crown_joints[0]
+		for joint in crown_joints:
+			var on_side = signf(joint.origin.x) == side
+			if on_side != (signf(limb.origin.x) == side):
+				if on_side: limb = joint
+			elif joint.origin.z > limb.origin.z:
+				limb = joint
+		var girth = limb.basis.get_scale().x
+		var tip = limb * Vector3(0, SEGMENT_HEIGHT*0.6, 0)
+		paths[side] = PackedVector4Array([Vector4(0, 0, 0, 1), Vector4(0, fork_y, 0, 1),
+			Vector4(limb.origin.x, limb.origin.y, limb.origin.z, girth), Vector4(tip.x, tip.y, tip.z, girth*0.75)])
+	return paths
 
 func _crown_limbs(tree: Node3D, height: float, bark: Color, crown_joints: Array) -> Array:
 	# Limbs fan up and out of the upper trunk and fork into ever smaller ones,
@@ -914,6 +943,20 @@ func _smoke_sequence():
 	assert(not player.climbing and player.velocity.x > 0, "Directional trunk leap must detach")
 	await _ticks(12)
 	assert(player.velocity.x > 5.0, "Leap must keep its momentum in the air")
+	# Climbing carries on past the split, out along a fork limb.
+	player.position = Vector3(-2,0.6,0)
+	player.velocity = Vector3.ZERO
+	await _ticks(5)
+	Input.action_press("attach")
+	await _ticks(2)
+	Input.action_release("attach")
+	var fork_y = player.trunk.get_meta("climb_paths")[1.0][1].y
+	Input.action_press("up")
+	await _ticks(360)
+	Input.action_release("up")
+	assert(player.climbing and player.position.y > fork_y + 2.0, "Climbing must reach up a fork limb")
+	assert(absf(player.position.x - player.trunk.position.x) > 1.2, "Climbing a fork limb must follow its lean")
+	player.respawn()
 	# Climbing past a branch while holding its direction runs out onto it.
 	player.position = Vector3(-2,0.6,0)
 	player.velocity = Vector3.ZERO

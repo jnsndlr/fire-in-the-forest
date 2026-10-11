@@ -30,12 +30,14 @@ const CLING_RADIUS = 0.82 # body centre from trunk centre while climbing
 const CLING_FRONT = 0.6 # radians the cling spot sits toward the camera from the trunk's side
 const ORBIT_SPEED = 10.0 # radians/s when scurrying around to the other side
 const CLIMB_GAIT = 13.0 # bounding-gait phase speed while climbing
+const TRUNK_RADIUS = 0.56 # trunk kit radius; fork limbs scale it down by their girth
 var stamina = 100.0
 var climbing = false
 var gliding = false
 var facing = 1.0
 var trunk: Node3D
 var climb_side = -1.0
+var limb = 0.0 # fork limb (side) being climbed above the split; 0 below it
 var climb_input = 0.0
 var nearby_trunks: Array[Node3D] = []
 var branch: Node3D
@@ -151,8 +153,19 @@ func grounded() -> bool:
 	return is_on_floor() or branch != null
 
 func trunk_x(tree: Node3D, y: float) -> float:
-	# Kit trunks sway within segments but every joint is centred on the tree.
-	return tree.position.x
+	return tree.position.x + _climb_line(tree, y).x
+
+func _climb_line(tree: Node3D, y: float) -> Vector4:
+	# Where the climb line is at height y: (x offset, z offset, girth, lean dx/dy).
+	# Straight up the trunk, then along the fork limb being climbed.
+	var path = tree.get_meta("climb_paths")[limb if limb != 0 else climb_side]
+	for i in range(1, path.size()):
+		var a = path[i-1]
+		var b = path[i]
+		if y <= b.y or i == path.size()-1:
+			var at = a.lerp(b, clampf((y-a.y)/(b.y-a.y), 0, 1))
+			return Vector4(at.x, at.z, at.w, (b.x-a.x)/(b.y-a.y))
+	return Vector4(0, 0, 1, 0)
 
 func _nearest_trunk() -> Node3D:
 	var nearest = nearby_trunks[0]
@@ -164,7 +177,8 @@ func _nearest_trunk() -> Node3D:
 func _grip(tree: Node3D, side = 0.0):
 	_leave_branch()
 	trunk = tree
-	var offset = position.x - trunk_x(trunk, position.y)
+	limb = 0.0
+	var offset = position.x - trunk.position.x
 	if side == 0.0:
 		side = signf(offset) if absf(offset) > 0.05 else -facing
 	climb_side = side
@@ -205,8 +219,14 @@ func _climb(delta, direction):
 	facing = -climb_side
 	climb_input = Input.get_axis("down","up")
 	var bottom = HALF_HEIGHT + 0.08
-	position.y = clampf(position.y + climb_input*CLIMB_SPEED*delta, bottom, float(trunk.get_meta("height")))
-	position.x = move_toward(position.x, trunk_x(trunk, position.y) + climb_side*TRUNK_OFFSET, delta*10)
+	# Above the split, stay on the limb taken; switching sides goes around that limb.
+	var path = trunk.get_meta("climb_paths")[limb if limb != 0 else climb_side]
+	if position.y <= path[1].y: limb = 0.0
+	elif limb == 0: limb = climb_side
+	position.y = clampf(position.y + climb_input*CLIMB_SPEED*delta, bottom, path[-1].y)
+	var line = _climb_line(trunk, position.y)
+	var offset = TRUNK_OFFSET - TRUNK_RADIUS*(1-line.z)
+	position.x = move_toward(position.x, trunk.position.x + line.x + climb_side*offset, delta*10)
 	var beside = _branch_beside(climb_side) if steer != 0 else null
 	if beside and jump_buffer == 0:
 		_release()
@@ -361,9 +381,11 @@ func _animate(delta, direction):
 			climb_phase += delta*CLIMB_GAIT
 			gait = sin(climb_phase)
 		var outward = Vector3(cos(climb_angle), 0, sin(climb_angle))
+		var line = _climb_line(trunk, position.y)
 		# The model sits upright (spine along +y, chest toward +x): spine up the trunk, chest to the bark.
-		target = Basis(-outward, Vector3.UP, (-outward).cross(Vector3.UP))
-		target_position = Vector3(trunk_x(trunk, position.y) - position.x, 0.07*gait, 0) + outward*CLING_RADIUS
+		# On a fork limb the spine leans with it.
+		target = Basis(Vector3.BACK, -atan(line.w)) * Basis(-outward, Vector3.UP, (-outward).cross(Vector3.UP))
+		target_position = Vector3(trunk.position.x + line.x - position.x, 0.07*gait, line.y) + outward*(CLING_RADIUS - TRUNK_RADIUS*(1-line.z))
 	else:
 		# Pitch the body along its motion; tilt the belly toward camera while gliding so the membrane reads.
 		var pitch = 0.0
