@@ -19,8 +19,8 @@ const WATER_Y = -0.45
 const ROCK = Color("a8877a")
 const MOSS = Color("85994d")
 const MOSS_LIGHT = Color("a8b46a")
-const LEAF = Color("7f9550")
-const LEAF_LIGHT = Color("b3bd74")
+const LEAF = Color("6c9447")
+const LEAF_LIGHT = Color("bfcc6c")
 var rng = RandomNumberGenerator.new()
 var leaf_rng = RandomNumberGenerator.new() # separate so leaf cards don't shift the level layout
 var limb_rng = RandomNumberGenerator.new() # likewise for twigs and crown limbs
@@ -573,9 +573,12 @@ func _load_trunk_kit():
 				trunk_pieces[role].append({"mesh": node.mesh, "sockets": sockets})
 	kit.free()
 
-func trunk_mesh(mids: int) -> ArrayMesh:
-	# Climbable trunks stay straight: base + random middles + top, each turned by a
-	# random 45° step, merged into one mesh.
+func trunk_mesh(mids: int, crown_joints: Array) -> ArrayMesh:
+	# Climbable trunks stay straight up to the crown: base + random middles, each
+	# turned by a random 45° step. Above the climbable part the trunk splits: a fork
+	# piece, turned so its limbs spread across the side view, with a top on each
+	# limb. The limb joints are collected so twigs and leaves can grow from them.
+	# Merged into one mesh.
 	var tool = SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var pieces = [_pick(trunk_pieces["base"])]
@@ -583,10 +586,20 @@ func trunk_mesh(mids: int) -> ArrayMesh:
 		var mid = _pick(trunk_pieces["mid"])
 		while trunk_pieces["mid"].size() > 1 and mid == pieces[-1]: mid = _pick(trunk_pieces["mid"])
 		pieces.append(mid)
-	pieces.append(_pick(trunk_pieces["top"]))
+	pieces.append(_pick(trunk_pieces["mid"]))
 	for k in range(pieces.size()):
 		var turn = Basis(Vector3.UP, rng.randi_range(0,7)*PI/4)
 		tool.append_from(pieces[k]["mesh"], 0, Transform3D(turn, Vector3(0, k*SEGMENT_HEIGHT, 0)))
+	# limb_rng, so the split crown doesn't shift the seeded layout.
+	var forks = trunk_pieces["fork"]
+	var fork = forks[limb_rng.randi_range(0, forks.size()-1)]
+	var at = Transform3D(Basis(Vector3.UP, PI if limb_rng.randf() < 0.5 else 0.0), Vector3(0, pieces.size()*SEGMENT_HEIGHT, 0))
+	tool.append_from(fork["mesh"], 0, at)
+	for socket in fork["sockets"]:
+		var joint = at * socket
+		var top = trunk_pieces["top"][limb_rng.randi_range(0, trunk_pieces["top"].size()-1)]
+		tool.append_from(top["mesh"], 0, joint * Transform3D(Basis(Vector3.UP, limb_rng.randi_range(0,7)*PI/4), Vector3.ZERO))
+		crown_joints.append(joint)
 	return tool.commit()
 
 func grown_trunk_mesh(tips: Array) -> ArrayMesh:
@@ -666,7 +679,8 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 	tree.set_meta("height",height)
 	var bark = Color("8f6552") if climbable else Color("ad8e80")
 	var trunk = MeshInstance3D.new()
-	trunk.mesh = trunk_mesh(mids)
+	var crown_joints = []
+	trunk.mesh = trunk_mesh(mids, crown_joints)
 	trunk.material_override = paint(Color.WHITE if climbable else Color("f2e2da"), {"use_vertex_color": true, "grain_scale": Vector3(3.5,0.35,3.5)})
 	if not climbable: trunk.scale = Vector3(1.35,1.0,1.35)
 	tree.add_child(trunk)
@@ -686,7 +700,7 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 	# leaves at the tips of limbs that fan up out of the trunk. The first eight dome
 	# clumps keep their original rng draws so the seeded layout doesn't shift.
 	# Leaves in front of the squirrel thin out (leaf.gdshader).
-	var crown = Vector3(0,height+1.6,-0.3)
+	var crown = Vector3(0,height+(2.8 if climbable else 1.6),-0.3)
 	var clumps = [[crown + Vector3(0,3.0,0),Vector3(2.8,1.8,2.2)]]
 	for i in range(8):
 		var at = crown + Vector3(rng.randf_range(-3.4,3.4),rng.randf_range(-1.6,1.6),rng.randf_range(-1.8,1.2))
@@ -694,7 +708,7 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 		if climbable: clumps.append([at + Vector3(0,1.2,0), radii*0.75])
 		else: clumps.append([at, radii])
 	if climbable:
-		for tip in _crown_limbs(tree, height, bark):
+		for tip in _crown_limbs(tree, height, bark, crown_joints):
 			clumps.append([tip + Vector3(0,0.3,0), Vector3(limb_rng.randf_range(1.0,1.5),limb_rng.randf_range(0.7,1.0),limb_rng.randf_range(0.9,1.2))])
 	else:
 		for i in range(8):
@@ -717,7 +731,7 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 		area.body_exited.connect(func(body):
 			if body == player: player.nearby_trunks.erase(tree))
 
-func _crown_limbs(tree: Node3D, height: float, bark: Color) -> Array:
+func _crown_limbs(tree: Node3D, height: float, bark: Color, crown_joints: Array) -> Array:
 	# Limbs fan up and out of the upper trunk and fork into ever smaller ones,
 	# showing through the gaps in the crown. Steep and thin, so they don't read as
 	# perches. Returns the twig tips for leaf clumps.
@@ -730,6 +744,20 @@ func _crown_limbs(tree: Node3D, height: float, bark: Color) -> Array:
 		var from = Vector3(signf(lean)*0.25, height - 5.5 + limb_rng.randf_range(0,3.0), -0.25)
 		var direction = Vector3(lean*limb_rng.randf_range(0.9,1.4), 1.0, limb_rng.randf_range(-0.6,0.0))
 		LIMBS.grow(tool, from, direction, limb_rng.randf_range(3.2,4.2), 0.24, 2, limb_rng, tips)
+	# Twigs spray out of each limb of the split crown, so the trunk's top ends in
+	# leafy forks rather than bare tops.
+	for joint in crown_joints:
+		var scale = joint.basis.get_scale().x
+		for k in range(2):
+			var from = joint * Vector3(0, SEGMENT_HEIGHT*limb_rng.randf_range(0.25,0.55), 0)
+			var direction = joint.basis.y.normalized() + Vector3(limb_rng.randf_range(-0.8,0.8), 0.2, limb_rng.randf_range(-0.4,0.2))
+			LIMBS.grow(tool, from, direction, limb_rng.randf_range(1.8,2.6)*scale/0.5, 0.16, 1, limb_rng, tips)
+		# Leaves at the top's tip and ringed around its small forks, so no bare ends show.
+		tips.append(joint * Vector3(0, SEGMENT_HEIGHT*0.85, 0))
+		var spin = limb_rng.randf_range(0, TAU)
+		for k in range(3):
+			var a = spin + k*TAU/3
+			tips.append(joint * Vector3(cos(a)*1.4, SEGMENT_HEIGHT*limb_rng.randf_range(0.95,1.15), sin(a)*1.4))
 	var node = MeshInstance3D.new()
 	node.mesh = tool.commit()
 	node.material_override = paint(bark, {"moss": 1.0, "moss_color": MOSS_LIGHT, "grain_scale": Vector3(0.35,3.5,3.5)})

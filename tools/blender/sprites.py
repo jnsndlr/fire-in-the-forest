@@ -160,45 +160,89 @@ def fern(name, seed):
     c.save(name)
 
 
+class ValueNoise:
+    """Smooth value noise in [0, 1] on a random lattice, sampled at any coordinates."""
+
+    def __init__(self, rng, cells=96):
+        self.cells = cells
+        self.grid = np.array([[rng.random() for _ in range(cells)] for _ in range(cells)], np.float32)
+
+    def __call__(self, x, y):
+        ix, iy = np.floor(x).astype(int), np.floor(y).astype(int)
+        fx, fy = x - ix, y - iy
+        fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+        g, n = self.grid, self.cells
+        x0, x1, y0, y1 = ix % n, (ix + 1) % n, iy % n, (iy + 1) % n
+        top = g[y0, x0] * (1 - fx) + g[y0, x1] * fx
+        bottom = g[y1, x0] * (1 - fx) + g[y1, x1] * fx
+        return top * (1 - fy) + bottom * fy
+
+
 def leaf_sprig(name, seed):
-    """Leaf card for 3D canopy clumps: a sprig of pointed leaves.
+    """Leaf card for 3D canopy clumps: a sprig of leaves painted as brush dabs.
 
     Also writes <name>_id.png, one flat grey per leaf.
+    Each leaf is a rounded dab with a ragged dry-brush edge: the edge distance is
+    pushed in and out by noise at two scales, and loose flecks of paint sit just
+    outside some edges. Inside, paint streaks run along the stroke, and each leaf
+    darkens the leaves beneath it along its edge so overlaps stay readable.
     RGB is a pale per-leaf value/hue variation that the leaf shader multiplies by
     each tree's leaf colour. Alpha is a soft distance field (0.5 at the leaf edge,
     rising inward), so the shader can erode leaves by raising the cut-off as a
     card turns edge-on to the camera.
     """
     rng = random.Random(seed)
+    noise = ValueNoise(rng)
     size = 256
     y, x = np.mgrid[0:size, 0:size].astype(np.float32)
     field = np.zeros((size, size), np.float32)
     ids = np.zeros((size, size), np.float32)
     rgb = np.ones((size, size, 3), np.float32) * np.array([0.88, 0.90, 0.80])
+    # Broad wobble swells and pinches each dab's outline; fine bristle noise frays it.
+    wobble = noise(x / 20, y / 20) - 0.5
+    bristle = noise(x / 4.5 + 40, y / 4.5) - 0.5
+    speck = noise(x / 3.2 + 70, y / 3.2 + 30)
     leaves = []
-    # Stem runs up from the bottom centre; leaves alternate off it and one caps the tip.
-    for k in range(9):
-        t = (k + 1) / 9
-        sx, sy = 128 + rng.uniform(-6, 6) * t, 246 - t * 150
-        if k == 8:
-            angle = math.radians(-90 + rng.uniform(-12, 12))
+    # Stem runs up from the bottom centre; rounded leaves alternate along it and
+    # one caps the tip. Lower leaves are painted first so upper ones overlap them.
+    count = 11
+    for k in range(count):
+        t = (k + 1) / count
+        sx, sy = 128 + rng.uniform(-8, 8) * t, 242 - t * 160
+        if k == count - 1:
+            angle = math.radians(-90 + rng.uniform(-15, 15))
         else:
             side = -1 if k % 2 else 1
-            angle = math.radians(-90 + side * rng.uniform(38, 62))
-        leaves.append((sx, sy, angle, rng.uniform(62, 86) * (1.05 - t * 0.25), rng.uniform(0.38, 0.48)))
+            angle = math.radians(-90 + side * rng.uniform(40, 70))
+        length = rng.uniform(56, 74) * (1.05 - t * 0.3)
+        leaves.append((sx, sy, angle, length, rng.uniform(0.52, 0.64)))
     for index, (sx, sy, angle, length, width) in enumerate(leaves):
         dx, dy = math.cos(angle), math.sin(angle)
         px, py = x - sx, y - sy
         u = (px * dx + py * dy) / length          # along the leaf, 0 at the stalk
         v = (-px * dy + py * dx) / length         # across the leaf
-        half = width * np.clip(np.sin(np.clip(u, 0, 1) * math.pi), 0, 1) ** 0.7 * 0.5
+        # Rounded dab: an egg shape, fullest past the middle, with a soft point.
+        uc = np.clip(u, 0, 1)
+        half = width * 0.5 * np.clip(np.sin(uc * math.pi), 0, 1) ** 0.6 * (0.8 + 0.3 * uc)
         dist = (half - np.abs(v)) * length        # pixels inside the edge
-        leaf = np.clip(0.5 + dist / 18.0, 0, 1) * ((u > 0) & (u < 1))
-        # Per leaf: value and warm/cool shift; darker toward the stalk; pale midrib.
-        tone = np.array([rng.uniform(0.95, 1.08), rng.uniform(0.97, 1.05), rng.uniform(0.82, 1.0)]) * rng.uniform(0.82, 1.0)
-        shade = (0.78 + 0.22 * np.clip(u * 1.6, 0, 1))[..., None]
-        rib = np.clip(1 - np.abs(v) * length / 1.6, 0, 1)[..., None] * 0.12 * (u > 0.08)[..., None]
-        colour = np.clip(tone * shade + rib, 0, 1)
+        dist = np.minimum(dist, np.minimum(u + 0.02, 1.0 - u) * length)
+        # Ragged edge, frayed more toward the tip where the brush lifts off.
+        lift = 0.5 + 0.9 * uc
+        dist = dist + wobble * 9.0 + bristle * 6.0 * lift
+        leaf = np.clip(0.5 + dist / 16.0, 0, 1) * (u > -0.02)
+        # A few loose flecks just past the edge, where the dry brush skipped.
+        flecks = (speck > 0.8) & (dist > -5) & (dist < 0) & (u > 0.3) & (u < 1.05)
+        leaf = np.where(flecks, np.maximum(leaf, 0.56), leaf)
+        # This leaf shadows the leaves beneath it just outside its edge.
+        under = np.clip(1 + dist / 7.0, 0, 1) * (dist < 0) * (field > 0.5)
+        rgb = rgb * (1 - 0.22 * under[..., None])
+        # Per leaf: value and warm/cool shift; darker toward the stalk; streaks
+        # stretched along the stroke; a lighter rim on one edge.
+        tone = np.array([rng.uniform(0.95, 1.1), rng.uniform(0.97, 1.05), rng.uniform(0.78, 1.0)]) * rng.uniform(0.72, 1.0)
+        shade = 0.78 + 0.22 * np.clip(u * 1.6, 0, 1)
+        streak = 1.0 + (noise(u * 3.0 + index * 7, v * 22.0) - 0.5) * 0.22
+        rim = np.clip(1.0 - dist / 6.0, 0, 1) * (v > 0) * 0.12
+        colour = np.clip(tone * (shade * streak)[..., None] + rim[..., None], 0, 1)
         over = (leaf > field)[..., None]
         rgb = np.where(over, colour, rgb)
         ids = np.where(over[..., 0], (index + 1) / (len(leaves) + 1), ids)
@@ -208,6 +252,9 @@ def leaf_sprig(name, seed):
     stem = np.clip(0.5 + (1.5 - np.abs(x - 128)) / 3.0, 0, 0.6) * ((y > 150) & (y < 240))
     rgb = np.where((stem > field)[..., None], np.array([0.80, 0.82, 0.62]), rgb)
     field = np.maximum(field, stem)
+    # Keep the card border clear so no leaf is cut off square.
+    border = np.minimum(np.minimum(x, size - 1 - x), np.minimum(y, size - 1 - y))
+    field = np.minimum(field, np.clip(border / 8.0, 0, 1))
     c = Canvas(size, size)
     c.rgba[..., :3] = rgb
     c.rgba[..., 3] = field

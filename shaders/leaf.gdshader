@@ -12,9 +12,11 @@ uniform sampler2D leaves : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2D leaf_ids : filter_nearest_mipmap, repeat_disable; // flat grey per leaf
 uniform vec4 paint_color : source_color = vec4(0.5, 0.58, 0.31, 1.0);
 uniform vec4 light_color : source_color = vec4(0.70, 0.74, 0.45, 1.0);
-uniform vec4 interior_color : source_color = vec4(0.22, 0.30, 0.26, 1.0);
-uniform vec4 shade_tint : source_color = vec4(0.62, 0.74, 0.92, 1.0);
-uniform float shade_strength = 0.22;
+uniform vec4 interior_color : source_color = vec4(0.12, 0.22, 0.24, 1.0);
+uniform vec4 shade_tint : source_color = vec4(0.55, 0.72, 0.95, 1.0);
+uniform float shade_strength = 0.3;
+uniform vec4 sun_tint : source_color = vec4(1.0, 0.93, 0.62, 1.0); // warm glow on the most sunlit leaves
+uniform float leaf_detail = 0.65; // how much per-leaf paint variation shows through the clump's massing
 uniform float edge_fade_start = 0.08; // |facing| where cards are fully gone
 uniform float edge_fade_end = 0.4;    // |facing| where cards are fully solid
 uniform float sway = 0.04;
@@ -82,7 +84,8 @@ void fragment() {
 
 	float wash = noise(world_pos * 0.9) * 0.6 + noise(world_pos * 3.0) * 0.4;
 	float top = smoothstep(0.15, 0.85, world_normal.y + (wash - 0.5) * 0.6);
-	vec3 color = mix(paint_color.rgb, light_color.rgb, top * outer) * leaf.rgb * 1.12;
+	// Per-leaf paint is partly flattened so a clump reads as one painted mass first.
+	vec3 color = mix(paint_color.rgb, light_color.rgb, top * outer) * mix(vec3(0.97), leaf.rgb * 1.12, leaf_detail);
 	color *= 1.0 + (wash - 0.5) * 0.25;
 	color = mix(interior_color.rgb, color, mix(0.3, 1.0, smoothstep(0.0, 0.9, outer)));
 	float haze = 1.0 - exp(-clamp(-world_pos.z, 0.0, 120.0) * haze_density);
@@ -96,7 +99,11 @@ void light() {
 	// Soft two-tone shading like the pigment shader; the shaded side picks up a
 	// cool bluish cast instead of just going darker.
 	float edge = noise(world_pos * 2.3) - 0.5;
-	float lit = smoothstep(-0.2, 0.35, dot(NORMAL, LIGHT) + edge * 0.35);
+	float ndl = dot(NORMAL, LIGHT) + edge * 0.35;
+	float lit = smoothstep(-0.1, 0.25, ndl);
+	// Leaves facing the sun squarely warm toward yellow, like a brushed highlight.
+	float glow = smoothstep(0.45, 0.85, ndl) * ATTENUATION;
 	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * lit / PI;
+	DIFFUSE_LIGHT += sun_tint.rgb * LIGHT_COLOR * glow * 0.35 / PI;
 	DIFFUSE_LIGHT += shade_tint.rgb * LIGHT_COLOR * (1.0 - lit * ATTENUATION) * shade_strength / PI;
 }
