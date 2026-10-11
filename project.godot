@@ -25,6 +25,13 @@ window/size/viewport_height=800
 window/size/window_width_override=1280
 window/size/window_height_override=800
 
+[shader_globals]
+
+squirrel_position={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+
 [physics]
 
 common/physics_interpolation=true

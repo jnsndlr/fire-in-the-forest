@@ -34,10 +34,13 @@ void vertex() {
 		wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	}
 	world_pos = wp;
-	world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+	// Inverse transpose by hand: the Compatibility renderer's MODEL_NORMAL_MATRIX
+	// skips it for MultiMesh instances, which bends normals on squashed props.
+	world_normal = normalize(transpose(inverse(mat3(MODEL_MATRIX))) * NORMAL);
 }
 
 void fragment() {
+	NORMAL = normalize((VIEW_MATRIX * vec4(world_normal, 0.0)).xyz);
 	vec3 gp = world_pos * grain_scale;
 	float wash = noise(gp * 1.7) * 0.6 + noise(gp * 6.0) * 0.4;
 	vec3 base = use_vertex_color ? paint_color.rgb * COLOR.rgb : paint_color.rgb;

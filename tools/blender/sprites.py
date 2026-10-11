@@ -163,6 +163,7 @@ def fern(name, seed):
 def leaf_sprig(name, seed):
     """Leaf card for 3D canopy clumps: a sprig of pointed leaves.
 
+    Also writes <name>_id.png, one flat grey per leaf.
     RGB is a pale per-leaf value/hue variation that the leaf shader multiplies by
     each tree's leaf colour. Alpha is a soft distance field (0.5 at the leaf edge,
     rising inward), so the shader can erode leaves by raising the cut-off as a
@@ -172,6 +173,7 @@ def leaf_sprig(name, seed):
     size = 256
     y, x = np.mgrid[0:size, 0:size].astype(np.float32)
     field = np.zeros((size, size), np.float32)
+    ids = np.zeros((size, size), np.float32)
     rgb = np.ones((size, size, 3), np.float32) * np.array([0.88, 0.90, 0.80])
     leaves = []
     # Stem runs up from the bottom centre; leaves alternate off it and one caps the tip.
@@ -184,7 +186,7 @@ def leaf_sprig(name, seed):
             side = -1 if k % 2 else 1
             angle = math.radians(-90 + side * rng.uniform(38, 62))
         leaves.append((sx, sy, angle, rng.uniform(62, 86) * (1.05 - t * 0.25), rng.uniform(0.38, 0.48)))
-    for sx, sy, angle, length, width in leaves:
+    for index, (sx, sy, angle, length, width) in enumerate(leaves):
         dx, dy = math.cos(angle), math.sin(angle)
         px, py = x - sx, y - sy
         u = (px * dx + py * dy) / length          # along the leaf, 0 at the stalk
@@ -199,6 +201,7 @@ def leaf_sprig(name, seed):
         colour = np.clip(tone * shade + rib, 0, 1)
         over = (leaf > field)[..., None]
         rgb = np.where(over, colour, rgb)
+        ids = np.where(over[..., 0], (index + 1) / (len(leaves) + 1), ids)
         field = np.maximum(field, leaf)
     # Thin pale stalk so the sprig reads as one piece up close; it stays faint in
     # the alpha field so it erodes first instead of lingering as a dark hair.
@@ -209,6 +212,12 @@ def leaf_sprig(name, seed):
     c.rgba[..., :3] = rgb
     c.rgba[..., 3] = field
     c.save(name)
+    # Companion ID map: a flat grey per leaf (stalk 0), so the shader can dissolve
+    # leaves one by one (the see-through around the squirrel).
+    c = Canvas(size, size)
+    c.rgba[..., :3] = ids[..., None]
+    c.rgba[..., 3] = 1.0
+    c.save(name + "_id")
 
 
 def build():

@@ -6,8 +6,10 @@ render_mode cull_disabled, specular_disabled;
 //   like one soft volume instead of a tangle of flat cards;
 // - back faces render, and keep that outward normal instead of the flipped one;
 // - cards fade out by eroding the leaf alpha as they turn edge-on to the camera;
+// - leaves between the camera and the squirrel thin out so it is never hidden;
 // - interiors darken (vertex colour R: 0 at the clump centre, 1 at its surface) and shade turns cool.
 uniform sampler2D leaves : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D leaf_ids : filter_nearest_mipmap, repeat_disable; // flat grey per leaf
 uniform vec4 paint_color : source_color = vec4(0.5, 0.58, 0.31, 1.0);
 uniform vec4 light_color : source_color = vec4(0.70, 0.74, 0.45, 1.0);
 uniform vec4 interior_color : source_color = vec4(0.22, 0.30, 0.26, 1.0);
@@ -16,6 +18,9 @@ uniform float shade_strength = 0.22;
 uniform float edge_fade_start = 0.08; // |facing| where cards are fully gone
 uniform float edge_fade_end = 0.4;    // |facing| where cards are fully solid
 uniform float sway = 0.04;
+global uniform vec3 squirrel_position;
+uniform float reveal_radius = 2.0; // world units around the squirrel; the inner half always clears
+uniform float reveal_ragged = 0.7; // how far noise pushes the reveal edge in and out
 uniform vec4 haze_low : source_color = vec4(0.88, 0.90, 0.76, 1.0);
 uniform vec4 haze_high : source_color = vec4(0.97, 0.91, 0.84, 1.0);
 uniform float haze_density = 0.05;
@@ -23,6 +28,7 @@ uniform float haze_density = 0.05;
 varying vec3 world_pos;
 varying vec3 world_normal;
 varying float outer;
+varying float card;
 
 float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 float noise(vec3 p) {
@@ -40,6 +46,7 @@ void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 	outer = COLOR.r;
+	card = COLOR.g;
 }
 
 void fragment() {
@@ -51,8 +58,26 @@ void fragment() {
 	float facing = abs(dot(face, VIEW));
 	float fade = smoothstep(edge_fade_start, edge_fade_end, facing);
 	vec4 leaf = texture(leaves, UV);
+	// Every adjustment below only lowers alpha, so empty texels can stop here and
+	// skip the noise. Overlapping cards make this most of the canopy's pixels.
+	if (leaf.a < 0.5) discard;
 	// Alpha is a distance field (0.5 at the leaf edge): lowering it erodes leaves.
-	ALPHA = leaf.a - (1.0 - fade) * 0.5;
+	// See-through: project this fragment onto the squirrel's depth and dissolve the
+	// leaves that are level with or nearer than it. The reveal edge is pushed around
+	// by world noise, and each leaf (card random x leaf ID) has its own threshold, so
+	// leaves drop out one by one, shrinking along their own shape as they go.
+	vec3 squirrel = (VIEW_MATRIX * vec4(squirrel_position, 1.0)).xyz;
+	vec2 lateral = VERTEX.xy * (squirrel.z / VERTEX.z) - squirrel.xy;
+	float in_front = smoothstep(-0.8, -0.1, VERTEX.z - squirrel.z);
+	float reveal = 0.0;
+	// ragged stays within ±0.75, so the noise only matters near the opening.
+	if (in_front > 0.0 && length(lateral) < reveal_radius + 0.75 * reveal_ragged) {
+		float ragged = (noise(world_pos * 1.4) - 0.5) + (noise(world_pos * 3.7) - 0.5) * 0.5;
+		reveal = (1.0 - smoothstep(reveal_radius * 0.5, reveal_radius, length(lateral) + ragged * reveal_ragged)) * in_front;
+	}
+	float leaf_rand = fract(sin(card * 91.7 + texture(leaf_ids, UV).r * 437.3) * 4375.85);
+	float dissolve = smoothstep(leaf_rand * 0.75, leaf_rand * 0.75 + 0.25, reveal);
+	ALPHA = leaf.a - (1.0 - fade) * 0.5 - dissolve * 0.55;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
 
 	float wash = noise(world_pos * 0.9) * 0.6 + noise(world_pos * 3.0) * 0.4;

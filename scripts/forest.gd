@@ -3,8 +3,10 @@ extends Node3D
 const PIGMENT = preload("res://shaders/pigment.gdshader")
 const LEAF_SHADER = preload("res://shaders/leaf.gdshader")
 const LEAF_SPRIG = preload("res://assets/sprites/leaf_sprig.png")
+const LEAF_SPRIG_ID = preload("res://assets/sprites/leaf_sprig_id.png")
 const PLAYER = preload("res://scripts/squirrel.gd")
 const BRANCH = preload("res://scripts/branch.gd")
+const LIMBS = preload("res://scripts/limbs.gd")
 const TERRAIN = preload("res://scripts/terrain.gd")
 const TRUNK_KIT = preload("res://assets/trees/trunk_kit.glb")
 const SEGMENT_HEIGHT = 4.0
@@ -21,6 +23,7 @@ const LEAF = Color("7f9550")
 const LEAF_LIGHT = Color("b3bd74")
 var rng = RandomNumberGenerator.new()
 var leaf_rng = RandomNumberGenerator.new() # separate so leaf cards don't shift the level layout
+var limb_rng = RandomNumberGenerator.new() # likewise for twigs and crown limbs
 var materials: Dictionary = {}
 var sphere: SphereMesh
 var branches: Array[Node3D] = []
@@ -45,6 +48,7 @@ var capture_frames = 0
 func _ready():
 	rng.seed = 8246
 	leaf_rng.seed = 5113
+	limb_rng.seed = 2741
 	var args = OS.get_cmdline_user_args()
 	smoke_test = "--smoke-test" in args
 	sphere = SphereMesh.new()
@@ -75,11 +79,42 @@ func _ready():
 		if arg.begins_with("--at="):
 			var at = arg.trim_prefix("--at=").split_floats(",")
 			player.position = Vector3(at[0], at[1], 0)
-	# Distant scenery doesn't need to cast shadows.
+	# Distant scenery doesn't need to cast shadows, and neither do the hundreds of
+	# small floor props (pebbles, fern fronds, flowers, mushrooms, moss tufts): every
+	# caster within the shadow distance is redrawn into the shadow map each frame,
+	# on screen or not.
 	for node in find_children("*","MeshInstance3D",true,false):
-		if node.global_position.z < -10: node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var small = node.get_parent() == self and (node.global_transform * node.get_aabb()).get_longest_axis_size() < 1.4
+		if node.global_position.z < -10 or small: node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_batch_props()
 	reset_camera()
 	if smoke_test: _smoke_sequence.call_deferred()
+
+func _batch_props():
+	# Thousands of rocks, stones, fronds, petals and bushes are separate sphere
+	# nodes; each costs a draw call per pass. Gather them into one MultiMesh per
+	# material, shadow setting and 24-unit strip of x, so strips off screen still
+	# get culled. Transparent materials keep their own nodes for depth sorting.
+	var groups = {}
+	for node in get_children():
+		if not (node is MeshInstance3D and node.mesh == sphere and node.get_child_count() == 0): continue
+		if node.material_override is BaseMaterial3D and node.material_override.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		var key = [node.material_override, node.cast_shadow, floori(node.position.x/24.0)]
+		if not groups.has(key): groups[key] = []
+		groups[key].append(node)
+	for key in groups:
+		var multimesh = MultiMesh.new()
+		multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		multimesh.mesh = sphere
+		multimesh.instance_count = groups[key].size()
+		for i in range(groups[key].size()):
+			multimesh.set_instance_transform(i, groups[key][i].transform)
+			groups[key][i].free()
+		var batch = MultiMeshInstance3D.new()
+		batch.multimesh = multimesh
+		batch.material_override = key[0]
+		batch.cast_shadow = key[1]
+		add_child(batch)
 
 func _inputs():
 	var bindings = {"left":[KEY_A,KEY_LEFT],"right":[KEY_D,KEY_RIGHT],"up":[KEY_W,KEY_UP],"down":[KEY_S,KEY_DOWN],"jump":[KEY_SPACE],"attach":[KEY_E],"glide":[KEY_SHIFT],"restart":[KEY_R],"overview":[KEY_Q],"help":[KEY_H],"quit":[KEY_ESCAPE]}
@@ -135,6 +170,7 @@ func leaf_material(color: Color, light: Color) -> ShaderMaterial:
 		var material = ShaderMaterial.new()
 		material.shader = LEAF_SHADER
 		material.set_shader_parameter("leaves",LEAF_SPRIG)
+		material.set_shader_parameter("leaf_ids",LEAF_SPRIG_ID)
 		material.set_shader_parameter("paint_color",color)
 		material.set_shader_parameter("light_color",light)
 		materials[key] = material
@@ -143,7 +179,8 @@ func leaf_material(color: Color, light: Color) -> ShaderMaterial:
 func add_leaf_clump(tool: SurfaceTool, center: Vector3, radii: Vector3):
 	# A clump of leaf cards scattered through an ellipsoid at random angles. Normals
 	# point away from the clump centre so it shades as one soft volume; vertex colour
-	# R records how far out each vertex sits (0 centre, 1 surface) for interior shade.
+	# R records how far out each vertex sits (0 centre, 1 surface) for interior shade;
+	# G is a random value per card for the see-through dissolve.
 	var count = int(20.0*(radii.x*radii.y + radii.y*radii.z + radii.x*radii.z))
 	for k in range(count):
 		var direction = Vector3(leaf_rng.randfn(),leaf_rng.randfn(),leaf_rng.randfn()).normalized()
@@ -153,13 +190,14 @@ func add_leaf_clump(tool: SurfaceTool, center: Vector3, radii: Vector3):
 		var up = face.cross(across)
 		var half = leaf_rng.randf_range(0.55,0.85)*clampf(radii.y+0.2,0.6,1.0)
 		var flip = 1.0 if leaf_rng.randf() < 0.5 else -1.0
+		var card = leaf_rng.randf()
 		var corners = [Vector2(-1,-1),Vector2(1,-1),Vector2(1,1),Vector2(-1,1)]
 		for i in [0,1,2,0,2,3]:
 			var c = corners[i]
 			var vertex = at + (across*c.x*flip + up*c.y)*half
 			var offset = (vertex - center)/radii
 			tool.set_normal(offset.normalized())
-			tool.set_color(Color(clampf(offset.length(),0,1),0,0))
+			tool.set_color(Color(clampf(offset.length(),0,1),card,0))
 			tool.set_uv(Vector2(c.x*0.5+0.5, 0.5-c.y*0.5))
 			tool.add_vertex(vertex)
 
@@ -603,12 +641,15 @@ func _background_tree(x: float, z: float):
 	trunk.material_override = paint(Color("f2e2da"), {"use_vertex_color": true, "grain_scale": Vector3(3.5,0.35,3.5)})
 	trunk.scale = Vector3.ONE*size
 	tree.add_child(trunk)
-	# Crown clumps gather around each limb tip.
+	# Crown clumps gather around each limb tip, with a cap above it so the tops round
+	# off. Extra clumps draw from leaf_rng so the seeded layout stays put.
 	var clumps = []
+	var crown_scale = 0.7+size*0.3
 	for tip in tips:
 		for k in range(4):
 			var spread = Vector3(rng.randf_range(-2.0,2.0),rng.randf_range(-0.6,1.4),rng.randf_range(-1.2,1.2))
-			clumps.append([tip*size + spread,Vector3(rng.randf_range(1.6,2.4),1.0,1.4)*(0.7+size*0.3)])
+			clumps.append([tip*size + spread,Vector3(rng.randf_range(1.6,2.4),leaf_rng.randf_range(1.2,1.7),1.6)*crown_scale])
+		clumps.append([tip*size + Vector3(leaf_rng.randf_range(-0.8,0.8),2.0*crown_scale,0),Vector3(1.9,1.5,1.6)*crown_scale])
 	leaf_crown(tree,clumps,Color("9fa877"),Color("c5c895"),z > -10)
 
 func _pick(options: Array):
@@ -639,11 +680,26 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 			var branch = Node3D.new()
 			branch.set_script(BRANCH)
 			add_child(branch)
-			branch.setup(self, tree, Vector3(x,h,0), side, 5.6-i*0.35, bark, rng)
+			branch.setup(self, tree, Vector3(x,h,0), side, 5.6-i*0.35, bark, rng, i/4.0, limb_rng)
 			branches.append(branch)
-	var clumps = []
+	# A rounded crown over the trunk top: a cap and a loose dome of clumps, plus
+	# leaves at the tips of limbs that fan up out of the trunk. The first eight dome
+	# clumps keep their original rng draws so the seeded layout doesn't shift.
+	# Leaves in front of the squirrel thin out (leaf.gdshader).
+	var crown = Vector3(0,height+1.6,-0.3)
+	var clumps = [[crown + Vector3(0,3.0,0),Vector3(2.8,1.8,2.2)]]
 	for i in range(8):
-		clumps.append([Vector3(rng.randf_range(-3.2,3.2),height+rng.randf_range(-1.2,1.5),rng.randf_range(-1.6,-0.4)),Vector3(rng.randf_range(1.8,2.6),1.0,1.5)])
+		var at = crown + Vector3(rng.randf_range(-3.4,3.4),rng.randf_range(-1.6,1.6),rng.randf_range(-1.8,1.2))
+		var radii = Vector3(rng.randf_range(2.0,2.8),1.7,1.9)
+		if climbable: clumps.append([at + Vector3(0,1.2,0), radii*0.75])
+		else: clumps.append([at, radii])
+	if climbable:
+		for tip in _crown_limbs(tree, height, bark):
+			clumps.append([tip + Vector3(0,0.3,0), Vector3(limb_rng.randf_range(1.0,1.5),limb_rng.randf_range(0.7,1.0),limb_rng.randf_range(0.9,1.2))])
+	else:
+		for i in range(8):
+			var d = Vector3(leaf_rng.randfn(),leaf_rng.randfn()*0.7,leaf_rng.randfn()).normalized()*sqrt(leaf_rng.randf())
+			clumps.append([crown + d*Vector3(3.6,2.6,2.0),Vector3(leaf_rng.randf_range(1.6,2.4),leaf_rng.randf_range(1.3,1.8),leaf_rng.randf_range(1.5,1.9))])
 	leaf_crown(tree,clumps,leaf,leaf_light)
 	if climbable:
 		var area = Area3D.new()
@@ -660,6 +716,25 @@ func _tree(x: float, height: float, z: float, climbable: bool):
 			if body == player and not player.nearby_trunks.has(tree): player.nearby_trunks.append(tree))
 		area.body_exited.connect(func(body):
 			if body == player: player.nearby_trunks.erase(tree))
+
+func _crown_limbs(tree: Node3D, height: float, bark: Color) -> Array:
+	# Limbs fan up and out of the upper trunk and fork into ever smaller ones,
+	# showing through the gaps in the crown. Steep and thin, so they don't read as
+	# perches. Returns the twig tips for leaf clumps.
+	var tool = SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var tips = []
+	var count = 6
+	for k in range(count):
+		var lean = lerpf(-1.0, 1.0, (k + limb_rng.randf_range(0.2,0.8))/count)
+		var from = Vector3(signf(lean)*0.25, height - 5.5 + limb_rng.randf_range(0,3.0), -0.25)
+		var direction = Vector3(lean*limb_rng.randf_range(0.9,1.4), 1.0, limb_rng.randf_range(-0.6,0.0))
+		LIMBS.grow(tool, from, direction, limb_rng.randf_range(3.2,4.2), 0.24, 2, limb_rng, tips)
+	var node = MeshInstance3D.new()
+	node.mesh = tool.commit()
+	node.material_override = paint(bark, {"moss": 1.0, "moss_color": MOSS_LIGHT, "grain_scale": Vector3(0.35,3.5,3.5)})
+	tree.add_child(node)
+	return tips
 
 func _hud():
 	var layer = CanvasLayer.new()
@@ -728,6 +803,7 @@ func _process(delta):
 	elapsed += delta
 	glide_pulse = maxf(0,glide_pulse-delta)
 	var squirrel_position = player.get_global_transform_interpolated().origin
+	RenderingServer.global_shader_parameter_set("squirrel_position", squirrel_position + Vector3(0,0.35,0))
 	look_ahead = lerpf(look_ahead, player.facing*1.3 + clampf(player.velocity.x*0.12,-1.0,1.0), 1-exp(-delta*2.5))
 	camera_target = camera_target.lerp(_camera_goal(squirrel_position),1-exp(-delta*(2.0 if glide_pulse>0 else 6.0)))
 	var distance_goal = OVERVIEW_DISTANCE if Input.is_action_pressed("overview") else (GLIDE_DISTANCE if player.gliding else CAMERA_DISTANCE)

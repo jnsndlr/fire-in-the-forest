@@ -3,8 +3,11 @@ extends Node3D
 # A springy, walkable branch. The squirrel runs along its top surface directly
 # (no physics collider), so the surface can curve, taper and flex. The tip sags
 # under load and rebounds; a jump on the upswing or near the tip gains height.
+# Forking twigs with leaves at their tips ride along the bending branch.
 
-const SEGMENTS = 6
+const LIMBS = preload("res://scripts/limbs.gd")
+
+const SEGMENTS = 8
 const STIFFNESS = 220.0
 const DAMPING = 3.5
 const SAG = 0.16
@@ -28,14 +31,16 @@ var load_weight = 1.0
 var segments: Array[MeshInstance3D] = []
 var riders: Array[Node3D] = []
 
-func setup(forest: Node3D, tree_node: Node3D, base: Vector3, branch_side: float, branch_length: float, bark: Color, rng: RandomNumberGenerator):
+func setup(forest: Node3D, tree_node: Node3D, base: Vector3, branch_side: float, branch_length: float, bark: Color, rng: RandomNumberGenerator, lift := 0.0, twig_rng: RandomNumberGenerator = rng):
+	# lift (0..1) tilts the branch upward: higher branches climb out of the trunk
+	# and level off toward the tip, like a real crown reaching for light.
 	tree = tree_node
 	side = branch_side
 	length = branch_length
 	position = base
-	rise = rng.randf_range(0.15,0.6)
-	droop = rng.randf_range(0.05,0.5)
-	kink = rng.randf_range(-0.25,0.35)
+	rise = rng.randf_range(0.15,0.6) + lift*length*rng.randf_range(0.3,0.45)
+	droop = rng.randf_range(0.05,0.5) + lift*length*0.15
+	kink = rng.randf_range(-0.25,0.35)*(1.0-lift*0.6)
 	wiggle_phase = rng.randf_range(0,TAU)
 	var material = forest.paint(bark, {"moss": 1.0, "moss_color": forest.MOSS_LIGHT, "grain_scale": Vector3(0.35,3.5,3.5)})
 	for i in range(SEGMENTS):
@@ -50,12 +55,39 @@ func setup(forest: Node3D, tree_node: Node3D, base: Vector3, branch_side: float,
 		node.material_override = material
 		add_child(node)
 		segments.append(node)
-	# A short twig and leaf clusters ride along the bending branch.
-	var twig = _rider(rng.randf_range(0.45,0.65))
-	forest.limb(twig, Vector3.ZERO, Vector3(side*rng.randf_range(0.5,0.9),rng.randf_range(0.6,1.0),-0.35), 0.06, bark)
-	for t in [0.62, 0.82, 1.0]:
-		var leaves = _rider(t)
-		forest.leaf_crown(leaves, [[Vector3(rng.randf_range(-0.3,0.3),rng.randf_range(0.45,0.85),rng.randf_range(-1.3,-0.7)), Vector3(rng.randf_range(0.8,1.3),0.5,0.75)]])
+	# Side twigs fork off along the outer half (more of them on higher branches),
+	# and a fan of twigs carries the line on past the walkable tip. They grow up and
+	# back from the branch, so the running surface and the squirrel stay clear.
+	var stops = [1.0]
+	for k in range(2 + roundi(lift*2.0)):
+		stops.append(lerpf(0.3, 0.9, (k + twig_rng.randf_range(0.2,0.8))/(2.0 + roundi(lift*2.0))))
+	for t in stops:
+		var rider = _rider(t)
+		var tool = SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var tips = []
+		var tip = t == 1.0
+		var count = 2 if tip else 1
+		for c in range(count):
+			# Tip twigs carry on along the branch's own line; side twigs vary from
+			# reaching steeply up to angling out and slightly down.
+			var direction: Vector3
+			if tip:
+				var along = _point(1.0) - _point(0.9)
+				direction = (along.normalized() + Vector3(0, c*0.5, -twig_rng.randf_range(0.1,0.4))).normalized()
+			else:
+				var up = twig_rng.randf_range(-0.15,1.2)
+				direction = Vector3(side*cos(up), sin(up), -twig_rng.randf_range(0.1,0.7))
+			var size = lerpf(1.0, 0.6, t)
+			LIMBS.grow(tool, Vector3.ZERO, direction, twig_rng.randf_range(1.0,1.5)*size + (0.6 if tip else 0.0), radius(t)*0.75, 1 if size < 0.8 or twig_rng.randf() < 0.5 else 2, twig_rng, tips)
+		var twigs = MeshInstance3D.new()
+		twigs.mesh = tool.commit()
+		twigs.material_override = material
+		rider.add_child(twigs)
+		var clumps = []
+		for at in tips:
+			clumps.append([at + Vector3(0,0.15,-0.2), Vector3(twig_rng.randf_range(0.55,0.8),twig_rng.randf_range(0.35,0.5),0.55)])
+		forest.leaf_crown(rider, clumps)
 	_refresh()
 
 func _rider(t: float) -> Node3D:
