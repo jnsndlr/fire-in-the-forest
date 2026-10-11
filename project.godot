@@ -1,19 +1,37 @@
-; Godot 4 project
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
 config_version=5
 
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
 [application]
+
 config/name="Fire in the Forest — Creekside Prototype"
 run/main_scene="res://main.tscn"
-config/features=PackedStringArray("4.0", "GL Compatibility")
+config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [display]
+
 window/size/viewport_width=1280
 window/size/viewport_height=800
 window/size/window_width_override=1280
 window/size/window_height_override=800
 
+[physics]
+
+common/physics_interpolation=true
+
 [rendering]
+
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_3d=2
 environment/defaults/default_clear_color=Color(0.79, 0.85, 0.74, 1)
-textures/default_filters/use_nearest_mipmap_filter=false
