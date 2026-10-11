@@ -9,6 +9,7 @@ uniform vec4 moss_color : source_color = vec4(0.62, 0.71, 0.40, 1.0);
 uniform float moss = 0.0;
 uniform float lump = 0.0;
 uniform float rim = 0.0;
+uniform bool use_vertex_color = false; // authored albedo from Blender kits, tinted by paint_color
 uniform vec3 grain_scale = vec3(1.0);
 uniform float pigment_strength = 0.16;
 uniform vec4 haze_low : source_color = vec4(0.88, 0.90, 0.76, 1.0);
@@ -39,7 +40,8 @@ void vertex() {
 void fragment() {
 	vec3 gp = world_pos * grain_scale;
 	float wash = noise(gp * 1.7) * 0.6 + noise(gp * 6.0) * 0.4;
-	vec3 color = paint_color.rgb * (1.0 + (wash - 0.5) * pigment_strength * 2.0);
+	vec3 base = use_vertex_color ? paint_color.rgb * COLOR.rgb : paint_color.rgb;
+	vec3 color = base * (1.0 + (wash - 0.5) * pigment_strength * 2.0);
 	// Slow warm/cool drift like uneven watercolor pigment.
 	color *= mix(vec3(1.0), vec3(1.07, 0.97, 0.94), noise(world_pos * 0.3));
 	float cap = smoothstep(0.3, 0.7, world_normal.y + (wash - 0.5) * 0.8) * moss;

@@ -17,7 +17,7 @@ The player is a squirrel escaping a forest fire through a large, beautiful fores
 - Trunks are explicitly climbable: overlapping a tree does not attach the squirrel automatically. Support directional leaps from trunks and connected branch routes.
 - Keep ground traversal possible, but give it streams, gullies, fallen logs, and skill jumps. Ground and canopy should offer meaningful alternate routes.
 - Opening a glide during a fast fall should feel like pulling a parachute rip cord: strong downward braking, a clear opening pose, and a brief camera response that conveys the catch. Maintain player control and landing visibility.
-- Stamina should make flight choices meaningful. The current three-second drain and seven-second recovery are starting values to tune. Fall damage and health remain open design questions; ordinary jumps should be safe.
+- Stamina should make flight choices meaningful. The current three-second drain and seven-second recovery are starting values to tune. Stamina does not recover while glide is held, so an exhausted glide drops into a full fall until the player lets go. Fall damage and health remain open design questions; ordinary jumps should be safe.
 
 ### Fair challenges, retries, and fire
 
@@ -52,26 +52,69 @@ Scoring, acorn purpose, exact fall-damage rules, difficulty curves, final export
 | Input | Action |
 |---|---|
 | A/D or arrows | Run |
-| Space | Jump; leap from a trunk (hold a direction) |
-| E | Grip / release an overlapping tree trunk |
-| W/S or up/down | Climb while gripping |
-| Hold Shift | Open glide while descending; rapidly brakes a fast fall |
+| Space | Jump (hold for full height); leap from a trunk toward the held side |
+| E, or W near a trunk | Grip an overlapping trunk (holding W also catches a trunk in midair); E releases |
+| W/S or up/down | Climb while gripping; S at the base steps off |
+| Hold A/D while climbing | Swing to that side of the trunk; climbing past a branch on that side runs you out onto it |
+| Run back toward the trunk on a branch | Hug onto the trunk; keep holding to swing around to the far side |
+| S on a branch | Crouch and flex the branch down; release to let it spring up |
+| Space on a branch | Jump; near the tip and on the branch's upswing you get a springboard boost |
+| S + Space on a branch | Drop through the branch |
+| Hold Shift | Open glide while descending; rapidly brakes a fast fall and keeps carrying you forward |
 | Hold Q | Pull the camera back to inspect routes |
+| H | Hide/show the controls line |
 | R | Instantly retry at the last lantern |
 | Escape | Quit |
 
-The camera starts close, widens slightly during glides, and briefly slows its follow when the glide opens. Lanterns restore stamina and save a retry point. Falling into the creek returns you to the lantern. The creek has stepping stones and an alternate tree route. Trees are climbable without blocking ordinary ground movement. Branch platforms currently have flat collision tops beneath organic tapered meshes.
+Branch running is a core traversal verb alongside jumping and gliding: climbing to a branch and running out along it is how the squirrel gains launch height and banks glide stamina. Branches (`scripts/branch.gd`) are long, curved, tapered limbs with a stiff spring. The squirrel runs along the curved top surface directly, without a physics collider: it passes through from below and lands from above. The tip sags under the squirrel and rebounds. Reaching the tip triggers a short detent (keep holding outward to run off). Crouching with S pumps the branch like a diving board, and jumping near the tip or on the upswing adds height (capped). Spring tuning is at the top of `branch.gd`; boost and detent values are in `squirrel.gd`.
+
+The test arena runs about 150 units (x ≈ -20 to 130) with six lanterns. The play strip (|z| ≤ 2.5) is flat ground with collision. Behind it the forest floor rolls up into hills that fade into the haze, and in front it rises gently toward the camera. Water is carved into the land (`scripts/terrain.gd`): brooks wind back into the hills and cross the play line at the stepping-stone gaps, a zig-zagging foreground river is fed by them, and a pond crossing near x ≈ 78–84 has its own feeder brook and a canopy route over it. Hills flatten near water so streams always run downhill. Shorelines get crisp white foam from the water shader, rocks and plants crowd every bank, and small foam rapids mark the brooks in the hills. The far hills are dressed with painted tree, bush and fern cards (MultiMesh, a few draw calls). The ground has meadow and leaf-litter zones, moss-capped stones, tilted slabs, fallen logs, 3D ferns, mushrooms and flowers.
+
+The camera is a low-FOV perspective camera that starts close, widens during glides, briefly slows its follow when the glide opens, and looks ahead and down during fast falls. Lanterns restore stamina and save a retry point. Touching the creek water returns you to the lantern. The creek has stepping stones and an alternate tree route. Trees are climbable without blocking ordinary ground movement. While climbing, the squirrel clings upright on the trunk's camera-facing edge, belly to the bark, with a bounding gait (paws reach, hind legs push, body stretches and bunches) and its tail hanging down. Switching sides scurries around the front of the trunk. This is visual only; climbing physics are unchanged.
 
 ## Current scope
 
-Handmade route, seeded decorative forest, procedural simple squirrel model with movement poses, object-anchored pigment shader, animated water, haze, climbing, buffered jumps/coyote time, stamina, glide braking, camera and checkpoints. This is an early movement/art foundation. Fire pressure, wind events, sound, acorns, finished character animation, authored watercolor textures, and full procedural challenges are future work. The shader gives mottled paint-like surfaces, not a finished reproduction of the reference artwork.
+Handmade route, seeded layered forest (play plane, mossy creek banks, mid trees, far hazy trees), procedural flying-squirrel model with glide membrane and squash/stretch, leaf-card canopy clumps, world-anchored pigment shader (soft-banded light, moss caps, lumpy silhouettes, depth haze behind the play plane), sunbeams, animated water with white foam accents, climbing with branch run-out, one-way branches, buffered jumps/coyote time, stamina, glide braking, camera and checkpoints. This is an early movement/art foundation. Fire pressure, wind events, sound, acorns, finished character animation, authored watercolor textures, and full procedural challenges are future work. The shader gives mottled paint-like surfaces, not a finished reproduction of the reference artwork.
 
 ## Structure
 
 - `scripts/forest.gd`: scene construction, materials, trunks, HUD, camera and lanterns.
-- `scripts/squirrel.gd`: constrained 3D movement, glide, climbing, stamina and squirrel poses.
-- `shaders/pigment.gdshader`: world-anchored pigment variation.
-- `shaders/water.gdshader`: stylized animated ripples.
+- `scripts/squirrel.gd`: constrained 3D movement, glide, climbing, branch running, stamina and squirrel poses.
+- `scripts/branch.gd`: springy walkable branch (shape, bend, surface queries, segment mesh updates).
+- `shaders/pigment.gdshader`: world-anchored pigment variation, optionally over authored vertex colours.
+- `tools/blender/`: Blender generator scripts for modular art kits.
+- `scripts/terrain.gd`: landform (flat play strip, rising hills, front slope), water courses and their signed-distance grid, ground and water meshes, bank and rapid sample points.
+- `shaders/sprite.gdshader`: painted distant-scenery cards with depth haze.
+- `shaders/leaf.gdshader`: canopy leaf clumps (outward-bent normals, two-sided cards, edge-on fade, dark interiors, cool shade, gentle sway).
+- `shaders/floor.gdshader`: forest floor with meadow/leaf-litter zones, leaf flecks, sun dapples and soil banks.
+- `shaders/water.gdshader`: stylized animated ripples, glints and shoreline foam.
+- `shaders/sunbeam.gdshader`, `shaders/sky.gdshader`: additive light shafts and camera-attached backdrop.
+
+## Art assets
+
+Modular assets are generated by Blender scripts so they stay reproducible and tweakable. Open the `.blend` to inspect them or sculpt on top; rerun the script to regenerate.
+
+**Trunk kit** (`tools/blender/trunk_kit.py` → `assets/source/trunk_kit.blend`, `assets/trees/trunk_kit.glb`):
+
+```sh
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/trunk_kit.py
+```
+
+- Segments are 4 units tall with radius ≈ 0.52: three root-flare bases (one wide), seven middles (plain ×2, twist, knot, burl, branch stub, moss), two forked tops that disappear into the canopy, three lean/bend pieces and three forks (even split, leader plus side limb, three-way).
+- **Sockets:** each piece exports child empties (`<piece>_socket_<n>`) marking where the next piece attaches: position, tilt and uniform scale. Straight pieces have one socket 4 units up, leans tilt it, forks have two or three, and tops have none. A socket only moves, turns and uniformly scales the standard joint, so joints still match.
+- Every segment ends in the same joint: a 32-vertex ring with eight bark ridges, whose shape and colour depend only on angle. Features ease out before each end, so any piece stacks on any other. Rotations in 45° steps also match.
+- Colour is baked into vertex colours, written as sRGB values because Godot linearises imported vertex colours itself. The pigment shader multiplies them by `paint_color` (`use_vertex_color`) and adds its world-anchored wash.
+- **Background trees** grow by following sockets: a base, a run of straight and leaning pieces, up to two levels of forks, then tops. Turns are picked so every limb stays within about 55° of vertical. Trees are scaled 1.0–1.7× for variety, and crown clusters sit at the limb tips.
+- **Climbable trees** stay straight (base, middles, top) because climbing assumes a vertical trunk. Lean and fork support for climbing is a later step.
+- `forest.gd` sorts pieces by name prefix (`trunk_base_`, `trunk_mid_`, `trunk_top_`, `trunk_lean_`, `trunk_fork_`). Every tree is merged into one mesh, and choices come from the seeded RNG so the forest is identical each run. Adding a new segment to the script makes it part of the mix automatically.
+
+**Leaf clumps** (after The Witness's trees): tree crowns and branch leaf clusters are clumps of `assets/sprites/leaf_sprig.png` cards built in `forest.gd` (`leaf_crown`, `add_leaf_clump`), merged into one mesh per crown. Each card's normals point away from its clump centre so the clump shades as one soft volume. Back faces render with the same outward normal. Cards erode as they turn edge-on to the camera, because the sprig's alpha is a distance field, so there are no hard slivers. Vertex colour marks depth into the clump for dark interiors, and the shaded side picks up a cool blue tint. The cards cast no shadows of their own; a shrunken ellipsoid proxy per clump (shadows only) still shades the ground. Leaf cards use their own RNG so they don't shift the seeded layout. Ground bushes are still lumpy ellipsoids.
+
+**Distant sprites** (`tools/blender/sprites.py` → `assets/sprites/*.png`) paint trees, bushes and ferns with numpy inside Blender: scalloped leaf masses lit warm yellow-green, with sage and pink in shade. The same script paints the `leaf_sprig.png` card used by the 3D leaf clumps. Rerun to repaint:
+
+```sh
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/sprites.py
+```
 
 ## Validation
 
@@ -80,6 +123,6 @@ Handmade route, seeded decorative forest, procedural simple squirrel model with 
 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . -- --smoke-test
 ```
 
-The smoke mode exercises ground landing, jumping, trunk overlap without attachment, explicit attachment, climbing, directional leaps, fast-fall glide braking, stamina drain/reset, lantern activation and creek-fall recovery. It exits after those checks pass. Movement tuning is in `squirrel.gd`; camera sizes and smoothing are in `forest.gd`.
+The smoke mode exercises ground landing, jumping, trunk overlap without attachment, explicit attachment, climbing, directional leaps, branch run-out, tip detent, landing on branches, trunk hugging, springboard jumps, drop-through, fast-fall glide braking, stamina drain/reset, lantern activation and creek-fall recovery. It exits after those checks pass. Movement tuning is in `squirrel.gd`; camera sizes and smoothing are in `forest.gd`.
 
-For a rendered preview, run Godot with `--path . -- --capture`. This writes `prototype-preview.png` and exits. Inspect the image for framing and materials, then play the scene to assess movement and visual stability.
+For a rendered preview, run Godot with `--path . -- --capture`. This writes `prototype-preview.png` and exits. Optional: `--at=x,y` places the squirrel, `--glide` holds glide, `--overview` holds the wide view, `--freeze` pins the squirrel in place, `--tap=a,b` / `--hold=a,b` press input actions, `--frame=N` picks the captured frame, `--out=path.png` changes the output, and `--perf` waits 300 frames and prints steady-state FPS and draw calls. Inspect the image for framing and materials, then play the scene to assess movement and visual stability.

@@ -24,6 +24,9 @@ void fragment() {
 	float lines = sin(pos.z * 7.0 + n * 7.0 + TIME * 0.9);
 	float breakup = smoothstep(0.45, 0.75, noise(vec3(pos.x * 1.2 - flow * 2.0, 3.0, pos.z * 2.5)));
 	color = mix(color, glint_color.rgb, smoothstep(0.93, 1.0, lines) * breakup * 0.85);
+	// Crisp broken foam where the water meets the bank (UV.x = local water depth).
+	float edge = UV.x + (noise(vec3(pos.x * 2.2, TIME * 0.4, pos.z * 2.2)) - 0.5) * 0.12;
+	color = mix(color, glint_color.rgb, step(edge, 0.09));
 	float haze = 1.0 - exp(-clamp(-pos.z, 0.0, 80.0) * 0.06);
 	ALBEDO = mix(color, haze_color.rgb, haze);
 }
