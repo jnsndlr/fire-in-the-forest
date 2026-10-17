@@ -9,7 +9,6 @@ const GROUND_ACCEL = 40.0
 const AIR_ACCEL = 16.0
 const AIR_DRAG = 3.0
 const JUMP_SPEED = 9.0
-const JUMP_CUT = 0.5
 const GRAVITY = 25.0
 const FALL_GRAVITY = 32.0
 const MAX_FALL = 24.0
@@ -25,10 +24,9 @@ const WATER_RESPAWN_Y = -0.9
 const HUG_DISTANCE = 0.75
 const HUG_PAUSE = 0.12
 const TIP_DETENT = 0.22
-const TIP_BOOST = 1.2
-const BOUNCE_TRANSFER = 0.45
-const MAX_BOOST = 3.5
-const CROUCH_WEIGHT = 3.0
+const BRANCH_CHARGE_TIME = 0.45
+const BRANCH_LAUNCH_SPEED = 15.0
+const BRANCH_INNER_LAUNCH_SPEED = 13.5
 const LAND_IMPULSE = 0.12
 const CLING_RADIUS = 0.82 # body centre from trunk centre while climbing
 const CLING_FRONT = 0.6 # radians the cling spot sits toward the camera from the trunk's side
@@ -50,6 +48,8 @@ var detent = 0.0
 var crouching = false
 var coyote = 0.0
 var jump_buffer = 0.0
+var jump_armed = false
+var branch_charge = 0.0
 var regrab = 0.0
 var drop_timer = 0.0
 var opening = 0.0
@@ -103,7 +103,11 @@ func _physics_process(delta):
 	regrab = maxf(0,regrab-delta)
 	drop_timer = maxf(0,drop_timer-delta)
 	if Input.is_action_just_pressed("jump"):
+		jump_armed = not climbing
+		if climbing: jump_buffer = 0.12 # Trunk leaps still happen on press.
+	if Input.is_action_just_released("jump") and jump_armed:
 		jump_buffer = 0.12
+		jump_armed = false
 	if climbing and Input.is_action_just_pressed("attach"):
 		_release()
 	elif not climbing and regrab == 0 and not nearby_trunks.is_empty() and _grip_requested():
@@ -224,6 +228,7 @@ func _climb(delta, direction):
 
 func _land_on(target: Node3D, fall_speed: float):
 	branch = target
+	jump_armed = false # Landing with Space held must not charge or jump on release.
 	detent = 0
 	velocity.y = 0
 	gliding = false
@@ -236,14 +241,34 @@ func _leave_branch():
 	if branch:
 		branch.release()
 	branch = null
+	if crouching: jump_armed = false
 	crouching = false
+	branch_charge = 0.0
 
 func _run_branch(delta, direction):
 	gliding = false
-	velocity.x = move_toward(velocity.x, direction*RUN_SPEED, GROUND_ACCEL*delta)
+	if (Input.is_action_pressed("down") and Input.is_action_just_pressed("jump")) or (crouching and Input.is_action_just_pressed("down")):
+		# Drop immediately and consume the release so it cannot trigger another jump.
+		dropped_branch = branch
+		drop_timer = 0.3
+		jump_buffer = 0
+		jump_armed = false
+		coyote = 0
+		_leave_branch()
+		velocity.y = -1.0
+		return
+	if Input.is_action_just_pressed("jump"):
+		crouching = true
+		branch_charge = 0.0
+	if crouching:
+		if Input.is_action_pressed("jump"):
+			branch_charge = minf(1.0, branch_charge + delta/BRANCH_CHARGE_TIME)
+		velocity.x = 0 # Plant feet, even at the tip; A/D now aims the release.
+	else:
+		velocity.x = move_toward(velocity.x, direction*RUN_SPEED, GROUND_ACCEL*delta)
 	var x = position.x + velocity.x*delta
 	var toward_trunk = direction != 0 and signf(direction) == -branch.side
-	if toward_trunk and absf(x - trunk_x(branch.tree, position.y)) < HUG_DISTANCE:
+	if not crouching and toward_trunk and absf(x - trunk_x(branch.tree, position.y)) < HUG_DISTANCE:
 		# Squirrels hug back onto the trunk instead of running off the inside end.
 		var side = branch.side
 		_grip(branch.tree, side)
@@ -265,32 +290,23 @@ func _run_branch(delta, direction):
 	else:
 		detent = 0
 	position.x = x
-	crouching = Input.is_action_pressed("down")
-	if Input.is_action_just_pressed("down"):
-		branch.impulse(x, -1.0)
-	branch.carry(x, CROUCH_WEIGHT if crouching else 1.0)
+	branch.carry(x, 1.0, branch_charge)
 	position.y = branch.surface_y(x) + HALF_HEIGHT
 	if jump_buffer > 0:
 		jump_buffer = 0
 		coyote = 0
-		if crouching:
-			# S+Space drops through the branch.
-			dropped_branch = branch
-			drop_timer = 0.3
-			_leave_branch()
-			velocity.y = -1.0
-			return
-		# Springboard: near the tip, and timed with the branch's upswing, adds height.
-		var t = branch.t_at(x)
-		var boost = clampf(TIP_BOOST*branch.shape(t) + BOUNCE_TRANSFER*maxf(0, branch.surface_speed(x)), 0, MAX_BOOST)
-		velocity.y = JUMP_SPEED + boost
-		branch.impulse(x, -2.0)
-		squash = -0.25 - boost*0.05
+		# Charge determines the launch, independent of the spring's current phase.
+		var strength = smoothstep(0.0, 0.5, branch.t_at(x))
+		var full_speed = lerpf(BRANCH_INNER_LAUNCH_SPEED, BRANCH_LAUNCH_SPEED, strength)
+		velocity.y = lerpf(JUMP_SPEED, full_speed, branch_charge)
+		if crouching: velocity.x = direction*LEAP_SPEED
+		branch.impulse(x, 2.0*branch_charge)
+		squash = -0.25
 		_leave_branch()
 
 func _move(delta, direction):
 	var on_floor = is_on_floor()
-	var want_glide = Input.is_action_pressed("glide") and not on_floor and stamina > 0 and velocity.y < 1.0
+	var want_glide = Input.is_action_pressed("glide") and not on_floor and stamina > 0 and velocity.y < 1.0 and not (jump_buffer > 0 and coyote > 0)
 	if want_glide and not gliding:
 		opening = 0.18
 		forest.glide_pulse = 0.18
@@ -312,8 +328,6 @@ func _move(delta, direction):
 		squash = -0.25
 		jump_buffer = 0
 		coyote = 0
-	if Input.is_action_just_released("jump") and velocity.y > 0 and not gliding:
-		velocity.y *= JUMP_CUT
 	if gliding:
 		velocity.y = move_toward(velocity.y, -GLIDE_FALL_SPEED, 100.0*delta)
 	else:
@@ -343,7 +357,7 @@ func _cling_angle() -> float:
 	return CLING_FRONT if climb_side > 0 else PI - CLING_FRONT
 
 func _animate(delta, direction):
-	var running = grounded() and absf(direction)>0 and not climbing
+	var running = grounded() and absf(direction)>0 and not climbing and not crouching
 	var target: Basis
 	var target_position = Vector3(0,0,0.55) # just in front of trunks and branches
 	var scurrying = false
@@ -375,7 +389,7 @@ func _animate(delta, direction):
 	cling_time = cling_time + delta if climbing else 0.0
 	visual.position = target_position if cling_time > 0.2 else visual.position.lerp(target_position, fast)
 	squash = lerpf(squash, 0.0, 1-exp(-delta*10))
-	var crouch = 0.25 if crouching and not climbing else 0.0
+	var crouch = lerpf(0.08, 0.3, branch_charge) if crouching and not climbing else 0.0
 	visual.scale = Vector3(1+(squash+crouch)*0.6, 1-squash-crouch, 1+(squash+crouch)*0.6)
 	_play_animation(delta, running, scurrying)
 
@@ -429,6 +443,7 @@ func respawn():
 	hug_pause = 0
 	coyote = 0
 	jump_buffer = 0
+	jump_armed = false
 	regrab = 0
 	drop_timer = 0
 	opening = 0
@@ -437,6 +452,7 @@ func respawn():
 	forest.reset_camera()
 
 func movement_state() -> String:
+	if crouching: return "CHARGED" if branch_charge >= 1.0 else "CHARGING"
 	if climbing: return "CLIMBING"
 	if gliding: return "GLIDING"
 	if grounded(): return "RUNNING" if absf(velocity.x)>0.2 else "RESTING"

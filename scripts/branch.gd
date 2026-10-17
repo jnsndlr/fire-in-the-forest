@@ -2,7 +2,7 @@ extends Node3D
 
 # A springy, walkable branch. The squirrel runs along its top surface directly
 # (no physics collider), so the surface can curve, taper and flex. The tip sags
-# under load and rebounds; a jump on the upswing or near the tip gains height.
+# under load and rebounds; Space adds a deliberate charge load.
 # Forking twigs with leaves at their tips ride along the bending branch.
 
 const LIMBS = preload("res://scripts/limbs.gd")
@@ -28,6 +28,7 @@ var deflection = 0.0
 var speed = 0.0
 var load_at = -1.0
 var load_weight = 1.0
+var charge_load = 0.0
 var segments: Array[MeshInstance3D] = []
 var riders: Array[Node3D] = []
 
@@ -127,18 +128,20 @@ func surface_y(x: float) -> float:
 func surface_speed(x: float) -> float:
 	return speed*shape(t_at(x))
 
-func carry(x: float, weight: float):
+func carry(x: float, weight: float, charge = 0.0):
 	load_at = t_at(x)
 	load_weight = weight
+	charge_load = charge
 
 func release():
 	load_at = -1.0
+	charge_load = 0.0
 
 func impulse(x: float, amount: float):
 	speed += amount*shape(t_at(x))
 
 func _physics_process(delta):
-	var target = -SAG*load_weight*shape(load_at) if load_at >= 0 else 0.0
+	var target = -lerpf(SAG*load_weight*shape(load_at), 0.8, charge_load) if load_at >= 0 else 0.0
 	if absf(speed) < 0.002 and absf(deflection-target) < 0.0005:
 		return
 	speed += (-STIFFNESS*(deflection-target) - DAMPING*speed)*delta
